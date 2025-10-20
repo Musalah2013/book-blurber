@@ -272,24 +272,76 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
 def extract_text_from_txt(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8", errors="ignore").strip()
 
+import tempfile  # make sure this import exists near the top
+
 def extract_text_from_epub(file_bytes: bytes) -> str:
-    # ebooklib.read_epub needs a real path — write to temp file.
+    """
+    Primary path: use ebooklib.read_epub on a temp file.
+    If ebooklib raises due to missing items (e.g., images), gracefully
+    fall back to the ZIP-based parser that ignores those resources.
+    """
+    # Write to a real file because ebooklib expects a filesystem path
     with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
+
     try:
-        book = epub.read_epub(tmp_path)
-        text = ""
+        try:
+            book = epub.read_epub(tmp_path)
+        except Exception:
+            # Fall back immediately if ebooklib can't read due to broken resources
+            return _extract_epub_via_zip(file_bytes)
+
+        text_parts = []
         for it in book.get_items():
-            if it.get_type() == ebooklib.ITEM_DOCUMENT:
-                soup = BeautifulSoup(it.get_content(), "html.parser")
-                text += soup.get_text(separator="\n") + "\n"
-        return text.strip()
+            # Only extract from document-ish items; ignore images/styles/etc.
+            try:
+                if it.get_type() == ebooklib.ITEM_DOCUMENT:
+                    soup = BeautifulSoup(it.get_content(), "html.parser")
+                    text_parts.append(soup.get_text(separator="\n"))
+            except Exception:
+                # If a specific item is problematic, just skip it
+                continue
+
+        text = "\n".join(text_parts).strip()
+        if text:
+            return text
+
+        # If ebooklib succeeded but yielded nothing (rare), try the fallback anyway
+        return _extract_epub_via_zip(file_bytes)
+
     finally:
+        # Clean up the temp file
         try:
             os.remove(tmp_path)
         except Exception:
             pass
+
+
+import zipfile as _zip  # you already import this for bulk zips; safe to re-use
+
+def _extract_epub_via_zip(file_bytes: bytes) -> str:
+    """
+    Fallback EPUB extractor that ignores missing resources by reading the archive
+    directly and extracting text from all .xhtml/.html/.htm files.
+    """
+    try:
+        text_chunks = []
+        with _zip.ZipFile(io.BytesIO(file_bytes)) as zf:
+            for name in zf.namelist():
+                low = name.lower()
+                if low.endswith((".xhtml", ".html", ".htm")):
+                    try:
+                        raw = zf.read(name)
+                        soup = BeautifulSoup(raw, "html.parser")
+                        text_chunks.append(soup.get_text(separator="\n"))
+                    except Exception:
+                        # Skip any bad entries without killing extraction
+                        continue
+        return "\n".join(text_chunks).strip()
+    except Exception:
+        # If even the archive is damaged, return empty string (caller handles)
+        return ""
 
 def extract_text_from_indd(file_bytes: bytes) -> str:
     # Heuristic: scrape long printable runs
@@ -759,5 +811,6 @@ with tab_log:
         with pd.ExcelWriter(out, engine="openpyxl") as w:
             df_log.to_excel(w, index=False, sheet_name="Log")
         st.download_button("⬇️ Download Log (Excel)", data=out.getvalue(), file_name="samawy_blurb_log.xlsx")
+
 
 
