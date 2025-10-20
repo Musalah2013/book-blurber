@@ -177,7 +177,7 @@ def clean_text(text: str) -> str:
     text = re.sub(r'[^\w\s\.,!?;:\'"()\-\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-def chunk_text(text: str, max_words: int = 1500, start_percentage: float = 0.4) -> Tuple[str, str]:
+def chunk_text(text: str, max_words: int = 3000, start_percentage: float = 0.4) -> Tuple[str, str]:
     words = text.split()
     n = len(words)
     if n <= max_words:
@@ -298,7 +298,7 @@ with tab_single:
             st.stop()
 
         clean = clean_text(raw)
-        chunk, descr = chunk_text(clean, max_words=1500, start_percentage=0.4)
+        chunk, descr = chunk_text(clean, max_words=3000, start_percentage=0.4)
 
         col_meta, col_words = st.columns(2)
         with col_meta:
@@ -415,3 +415,4 @@ with tab_bulk:
                 for fname, content in sample_files:
                     zf.writestr(fname, content)
             st.download_button("⬇️ Download Text Samples (.zip)", data=zbuf.getvalue(), file_name="ai_input_samples.zip")
+
