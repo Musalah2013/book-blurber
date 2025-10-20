@@ -14,6 +14,7 @@ import PyPDF2
 import docx
 import ebooklib
 from ebooklib import epub
+import tempfile
 
 # === Google GenAI (new unified SDK) ===
 from google import genai
@@ -148,14 +149,25 @@ def extract_text_from_txt(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8", errors="ignore").strip()
 
 def extract_text_from_epub(file_bytes: bytes) -> str:
-    with io.BytesIO(file_bytes) as buff:
-        book = epub.read_epub(buff)
+    # ebooklib.read_epub wants a real file path; use a temp file.
+    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        book = epub.read_epub(tmp_path)
         text = ""
         for it in book.get_items():
             if it.get_type() == ebooklib.ITEM_DOCUMENT:
                 soup = BeautifulSoup(it.get_content(), "html.parser")
                 text += soup.get_text(separator="\n") + "\n"
         return text.strip()
+    finally:
+        # Clean up the temp file on all OSes
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
 
 def extract_text_from_indd(file_bytes: bytes) -> str:
     # Heuristic: scrape long printable runs
@@ -586,4 +598,5 @@ with tab_log:
         with pd.ExcelWriter(out, engine="openpyxl") as w:
             df_log.to_excel(w, index=False, sheet_name="Log")
         st.download_button("⬇️ Download Log (Excel)", data=out.getvalue(), file_name="samawy_blurb_log.xlsx")
+
 
