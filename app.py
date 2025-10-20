@@ -86,14 +86,34 @@ def resolve_model_id(preferred: str) -> str:
     return preferred
 
 def _usage_counts(resp) -> Tuple[int, int]:
-    # google-genai response.usage_metadata has input_tokens/output_tokens
-    prompt_tokens = getattr(getattr(resp, "usage_metadata", None), "input_tokens", 0) or 0
-    output_tokens = getattr(getattr(resp, "usage_metadata", None), "output_tokens", 0) or 0
-    return prompt_tokens, output_tokens
+    """
+    google-genai may omit usage_metadata entirely, or set fields to None.
+    Normalize to integers.
+    """
+    usage = getattr(resp, "usage_metadata", None)
+    if not usage:
+        return 0, 0
+    try:
+        pt = int(getattr(usage, "input_tokens", 0) or 0)
+        ot = int(getattr(usage, "output_tokens", 0) or 0)
+        return pt, ot
+    except Exception:
+        return 0, 0
 
 def calculate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
     p = MODEL_PRICING.get(model_name, MODEL_PRICING["unknown"])
     return (prompt_tokens/1_000_000)*p["input_per_million"] + (completion_tokens/1_000_000)*p["output_per_million"]
+
+def _model_name_from_response(resp: object, fallback: str) -> str:
+    """
+    google-genai responses may expose either .model_version or .model, sometimes as
+    'models/gemini-2.0-flash'. Return a clean model id (without 'models/').
+    """
+    raw = getattr(resp, "model_version", None) or getattr(resp, "model", None) or fallback
+    try:
+        return str(raw).split("/")[-1]
+    except Exception:
+        return fallback
 
 # ---------- Extraction ----------
 def extract_text_from_pdf(file_bytes: bytes) -> str:
@@ -379,3 +399,4 @@ with tab2:
                 for fname, content in sample_files:
                     zf.writestr(fname, content)
             st.download_button("⬇️ Download Text Samples (.zip)", data=zbuf.getvalue(), file_name="ai_input_samples.zip")
+
