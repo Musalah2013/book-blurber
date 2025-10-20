@@ -344,7 +344,7 @@ def chunk_text(text: str, max_words: int = 4000, start_percentage: float = 0.4) 
 # =========================
 def build_blurb_prompt(text_chunk: str, chunk_description: str) -> str:
     return f"""
-بالاستناد إلى المقطع التالي المقتبس من كتاب، أَنتِج نبذة تعريفية قصيرة بالعربية (200–500 حرف).
+بالاستناد إلى المقطع التالي المقتبس من كتاب، أَنتِج نبذة تعريفية قصيرة بالعربية لا تقل عن 500 حرف ولا تزيد عن 1000 حرف.
 
 - نبرة أدبية قريبة من أسلوب النص.
 - تعكس جوهر الموضوع أو النبرة الشعورية.
@@ -759,4 +759,5 @@ with tab_log:
         with pd.ExcelWriter(out, engine="openpyxl") as w:
             df_log.to_excel(w, index=False, sheet_name="Log")
         st.download_button("⬇️ Download Log (Excel)", data=out.getvalue(), file_name="samawy_blurb_log.xlsx")
+
 
