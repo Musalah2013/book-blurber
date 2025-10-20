@@ -316,7 +316,7 @@ def clean_text(text: str) -> str:
     text = re.sub(r'[^\w\s\.,!?;:\'"()\-\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-def chunk_text(text: str, max_words: int = 1500, start_percentage: float = 0.4) -> Tuple[str, str]:
+def chunk_text(text: str, max_words: int = 4000, start_percentage: float = 0.4) -> Tuple[str, str]:
     words = text.split()
     n = len(words)
     if n <= max_words:
@@ -344,7 +344,7 @@ def chunk_text(text: str, max_words: int = 1500, start_percentage: float = 0.4) 
 # =========================
 def build_blurb_prompt(text_chunk: str, chunk_description: str) -> str:
     return f"""
-بالاستناد إلى المقطع التالي المقتبس من كتاب، أَنتِج نبذة تعريفية قصيرة بالعربية (١٦٠–٥٠٠ حرف).
+بالاستناد إلى المقطع التالي المقتبس من كتاب، أَنتِج نبذة تعريفية قصيرة بالعربية (200–500 حرف).
 
 - نبرة أدبية قريبة من أسلوب النص.
 - تعكس جوهر الموضوع أو النبرة الشعورية.
@@ -525,7 +525,7 @@ with tab_single:
             st.stop()
 
         clean = clean_text(raw)
-        chunk, descr = chunk_text(clean, max_words=1500, start_percentage=0.4)
+        chunk, descr = chunk_text(clean, max_words=4000, start_percentage=0.4)
 
         col_meta, col_words = st.columns(2)
         with col_meta:
@@ -759,3 +759,4 @@ with tab_log:
         with pd.ExcelWriter(out, engine="openpyxl") as w:
             df_log.to_excel(w, index=False, sheet_name="Log")
         st.download_button("⬇️ Download Log (Excel)", data=out.getvalue(), file_name="samawy_blurb_log.xlsx")
+
