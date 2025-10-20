@@ -2,11 +2,13 @@ import os
 import re
 import io
 import time
+import tempfile
 import zipfile as _zip
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple, Dict, Any, List
 
+import requests
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -14,7 +16,6 @@ import PyPDF2
 import docx
 import ebooklib
 from ebooklib import epub
-import tempfile
 
 # === Google GenAI (new unified SDK) ===
 from google import genai
@@ -31,6 +32,7 @@ st.set_page_config(
 )
 
 SUPPORTED_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro"]
+PRICING_URL = "https://ai.google.dev/gemini-api/docs/pricing"  # official pricing page
 
 BOOK_CATEGORIES = [
     "التقنية والكمبيوتر", "القواميس والموسوعات", "معلومات عامة", "العلوم الاجتماعية والسياسية",
@@ -42,15 +44,17 @@ BOOK_CATEGORIES = [
     "التربية والتعليم", "كتب الهندسة", "الكتب الإسلامية والدينية"
 ]
 
-# If you have pricing, set them in UI. Keep zeros by default.
-DEFAULT_PRICE_IN = 0.0
-DEFAULT_PRICE_OUT = 0.0
-
 # Session vars
 if "last_stats" not in st.session_state:
     st.session_state.last_stats = {}  # holds latest run stats
 if "op_log" not in st.session_state:
     st.session_state.op_log: List[Dict[str, Any]] = []  # append a dict per operation
+if "live_prices" not in st.session_state:
+    st.session_state.live_prices = {}  # filled at app start
+if "price_in" not in st.session_state:
+    st.session_state.price_in = 0.0
+if "price_out" not in st.session_state:
+    st.session_state.price_out = 0.0
 
 # =========================
 # Helpers
@@ -92,10 +96,7 @@ def resolve_model_id(preferred: str) -> str:
     return preferred  # best-effort
 
 def _usage_counts(resp) -> Tuple[int, int]:
-    """
-    Safely extract token counts from response.usage_metadata.
-    Returns (prompt_tokens, output_tokens).
-    """
+    """Safely extract token counts from response.usage_metadata."""
     usage = getattr(resp, "usage_metadata", None)
     if not usage:
         return 0, 0
@@ -115,13 +116,136 @@ def _model_name_from_response(resp: object, fallback: str) -> str:
         return fallback
 
 def estimate_tokens_from_chars(s: str) -> int:
-    """Heuristic: ~1 token per ~4 characters."""
+    """Heuristic: ~1 token per ~4 characters (Google guidance)."""
     if not s:
         return 0
     return max(0, int(len(s.strip()) / 4))
 
 def calculate_cost(prompt_tokens: int, output_tokens: int, price_in: float, price_out: float) -> float:
     return ((prompt_tokens/1_000_000) * price_in) + ((output_tokens/1_000_000) * price_out)
+
+# =========================
+# Live Pricing Fetch & Parse
+# =========================
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_pricing_html(url: str) -> str:
+    """Fetch the pricing page HTML (cached for 1 hour)."""
+    resp = requests.get(url, timeout=20)
+    resp.raise_for_status()
+    return resp.text
+
+def _money_to_float(s: str) -> float:
+    m = re.search(r"\$?\s*([0-9]+(?:\.[0-9]+)?)", s)
+    return float(m.group(1)) if m else 0.0
+
+def parse_gemini_pricing(html: str) -> Dict[str, Dict[str, float]]:
+    """
+    Parse the official pricing page to extract per-1M token input/output prices
+    for key models we care about. The page can change; we use robust, text-first
+    heuristics and prefer 'text/image/video' input and 'output (including thinking)'.
+    Returns: { model_id: {"input": float, "output": float} }
+    """
+    soup = BeautifulSoup(html, "lxml")
+    text = soup.get_text("\n", strip=True)
+    lo = text.lower()
+
+    # Candidate labels to anchor sections
+    anchors = {
+        "gemini-2.0-flash": [
+            "gemini 2.0 flash", "2.0 flash"
+        ],
+        "gemini-2.0-flash-lite": [
+            "gemini 2.0 flash lite", "2.0 flash lite", "flash-lite"
+        ],
+        "gemini-2.5-pro": [
+            "gemini 2.5 pro", "2.5 pro"
+        ],
+        # You can extend with "gemini 2.5 flash" or "2.5 flash live" if you plan to use them.
+    }
+
+    # For each model, locate the nearest "input price" and "output price" lines after the anchor.
+    prices: Dict[str, Dict[str, float]] = {}
+    for model, keys in anchors.items():
+        idx = -1
+        for k in keys:
+            idx = lo.find(k)
+            if idx != -1:
+                break
+        if idx == -1:
+            continue  # not found on page text
+
+        # Search a local window after the anchor
+        window = lo[idx: idx + 2500]  # look ahead 2500 chars
+        # Extract lines for clarity
+        lines = window.splitlines()
+
+        input_price = 0.0
+        output_price = 0.0
+
+        # Heuristics: find "input price" line and "output price" line
+        for i, line in enumerate(lines):
+            if "input price" in line:
+                # Prefer the first $ amount on same line or the next line(s)
+                seg = lines[i]
+                # If input covers multiple modalities on separate lines, we prefer text/image/video one
+                # Try this line first:
+                val = _money_to_float(seg)
+                if val == 0.0 and i+1 < len(lines):
+                    # check a couple of following lines
+                    for j in range(1, 5):
+                        if i + j < len(lines):
+                            val = _money_to_float(lines[i + j])
+                            if val:
+                                break
+                if val:
+                    input_price = val
+
+            if "output price" in line:
+                seg = lines[i]
+                val = _money_to_float(seg)
+                if val == 0.0 and i+1 < len(lines):
+                    for j in range(1, 5):
+                        if i + j < len(lines):
+                            val = _money_to_float(lines[i + j])
+                            if val:
+                                break
+                if val:
+                    output_price = val
+
+        # If still zero (page structure is different), try broader regex around the window
+        if input_price == 0.0:
+            m = re.search(r"input price.*?\$?\s*([0-9]+(?:\.[0-9]+)?)", window, flags=re.S)
+            if m:
+                input_price = float(m.group(1))
+        if output_price == 0.0:
+            m = re.search(r"output price.*?\$?\s*([0-9]+(?:\.[0-9]+)?)", window, flags=re.S)
+            if m:
+                output_price = float(m.group(1))
+
+        if input_price or output_price:
+            prices[model] = {"input": input_price, "output": output_price}
+
+    return prices
+
+def get_live_prices() -> Dict[str, Dict[str, float]]:
+    """Fetch and parse live pricing; returns dict. Falls back to previous cached values."""
+    try:
+        html = fetch_pricing_html(PRICING_URL)
+        parsed = parse_gemini_pricing(html)
+        # Keep prior values if some models missing
+        merged = {**st.session_state.live_prices, **parsed} if st.session_state.live_prices else parsed
+        return merged or {}
+    except Exception as e:
+        st.warning(f"Could not fetch live pricing: {e}")
+        return st.session_state.live_prices or {}
+
+def pick_default_prices(prices: Dict[str, Dict[str, float]], model: str) -> Tuple[float, float]:
+    """
+    Choose default (input, output) from live prices for a given model id.
+    If a model isn't found, return (0.0, 0.0).
+    """
+    info = prices.get(model) or {}
+    return float(info.get("input", 0.0) or 0.0), float(info.get("output", 0.0) or 0.0)
 
 # =========================
 # Extraction
@@ -149,7 +273,7 @@ def extract_text_from_txt(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8", errors="ignore").strip()
 
 def extract_text_from_epub(file_bytes: bytes) -> str:
-    # ebooklib.read_epub wants a real file path; use a temp file.
+    # ebooklib.read_epub needs a real path — write to temp file.
     with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
@@ -162,12 +286,10 @@ def extract_text_from_epub(file_bytes: bytes) -> str:
                 text += soup.get_text(separator="\n") + "\n"
         return text.strip()
     finally:
-        # Clean up the temp file on all OSes
         try:
             os.remove(tmp_path)
         except Exception:
             pass
-
 
 def extract_text_from_indd(file_bytes: bytes) -> str:
     # Heuristic: scrape long printable runs
@@ -194,7 +316,7 @@ def clean_text(text: str) -> str:
     text = re.sub(r'[^\w\s\.,!?;:\'"()\-\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-def chunk_text(text: str, max_words: int = 3000, start_percentage: float = 0.4) -> Tuple[str, str]:
+def chunk_text(text: str, max_words: int = 1500, start_percentage: float = 0.4) -> Tuple[str, str]:
     words = text.split()
     n = len(words)
     if n <= max_words:
@@ -311,7 +433,7 @@ def categorize_book_cached(model: str, text_chunk: str, chunk_description: str) 
     }
 
 # =========================
-# Sidebar
+# Sidebar (with live pricing)
 # =========================
 st.title("📖 Samawy Book Blurb Writer — Streamlit Edition")
 st.caption("AI-Powered Arabic blurbs & categorization (Gemini 2.x/2.5).")
@@ -328,13 +450,56 @@ with st.sidebar:
         st.write(list_available_models_cached())
 
     st.divider()
-    st.subheader("💸 Pricing (optional)")
-    price_in = st.number_input(
-        "Input price per 1M tokens (USD)", min_value=0.0, value=DEFAULT_PRICE_IN, step=0.1, format="%.4f"
+    st.subheader("💸 Live Pricing (per 1M tokens)")
+
+    # Fetch live prices on first load or refresh
+    col_lp1, col_lp2 = st.columns([1, 1])
+    with col_lp1:
+        if st.button("Refresh from Google"):
+            st.session_state.live_prices = get_live_prices()
+    # If empty, try to fill at first run
+    if not st.session_state.live_prices:
+        st.session_state.live_prices = get_live_prices()
+
+    # Show a small table of fetched prices
+    if st.session_state.live_prices:
+        df_prices = pd.DataFrame([
+            {"Model": k, "Input": v.get("input", 0.0), "Output": v.get("output", 0.0)}
+            for k, v in st.session_state.live_prices.items()
+        ])
+        st.dataframe(df_prices, use_container_width=True, height=180)
+    else:
+        st.info("No live prices detected yet. You can still set prices manually below.")
+
+    # Prefill the editable inputs from live price of chosen model (unless user changed them already)
+    live_in, live_out = pick_default_prices(st.session_state.live_prices, chosen_model)
+
+    def _prefill_once():
+        if st.session_state.price_in == 0.0 and live_in:
+            st.session_state.price_in = float(live_in)
+        if st.session_state.price_out == 0.0 and live_out:
+            st.session_state.price_out = float(live_out)
+
+    _prefill_once()
+
+    st.number_input(
+        "Input price per 1M tokens (USD)",
+        min_value=0.0,
+        value=float(st.session_state.price_in),
+        step=0.05,
+        key="price_in"
     )
-    price_out = st.number_input(
-        "Output price per 1M tokens (USD)", min_value=0.0, value=DEFAULT_PRICE_OUT, step=0.1, format="%.4f"
+    st.number_input(
+        "Output price per 1M tokens (USD)",
+        min_value=0.0,
+        value=float(st.session_state.price_out),
+        step=0.05,
+        key="price_out"
     )
+
+    if st.button("Reset to live price for selected model"):
+        st.session_state.price_in, st.session_state.price_out = pick_default_prices(st.session_state.live_prices, chosen_model)
+        st.experimental_rerun()
 
 # =========================
 # Tabs: Single | Bulk | Stats | Log
@@ -360,7 +525,7 @@ with tab_single:
             st.stop()
 
         clean = clean_text(raw)
-        chunk, descr = chunk_text(clean, max_words=3000, start_percentage=0.4)
+        chunk, descr = chunk_text(clean, max_words=1500, start_percentage=0.4)
 
         col_meta, col_words = st.columns(2)
         with col_meta:
@@ -416,7 +581,7 @@ with tab_single:
 
             cleaned_words = len(clean.split())
             chunk_words   = len(chunk.split())
-            est_cost = calculate_cost(prompt_tokens, output_tokens, price_in, price_out)
+            est_cost = calculate_cost(prompt_tokens, output_tokens, float(st.session_state.price_in), float(st.session_state.price_out))
 
             # Update global "last_stats"
             st.session_state.last_stats = {
@@ -501,7 +666,7 @@ with tab_bulk:
                     disp_p2 = cat_res["prompt_tokens"]
                     disp_c2 = cat_res["output_tokens"]
 
-                est_cost = calculate_cost(p_total, o_total, price_in, price_out)
+                est_cost = calculate_cost(p_total, o_total, float(st.session_state.price_in), float(st.session_state.price_out))
                 ai_input_words = len(chunk_b.split())
 
                 rows.append({
@@ -559,7 +724,7 @@ with tab_bulk:
                     zf.writestr(fname, content)
             st.download_button("⬇️ Download Text Samples (.zip)", data=zbuf.getvalue(), file_name="ai_input_samples.zip")
 
-        st.info("Bulk complete. See **Stats** for last single-run metrics (if any) and **Log** for full history.")
+        st.info("Bulk complete. See **Stats** for the latest single-run metrics (if any) and **Log** for full history.")
 
 # ---------- Stats (own tab) ----------
 with tab_stats:
@@ -568,7 +733,6 @@ with tab_stats:
     if not ls:
         st.info("Run a Single or Bulk operation to populate Stats.")
     else:
-        # Render a clean stats block
         stats_lines = [
             f"Timestamp: {ls['timestamp']}",
             f"File: {ls['file']}",
@@ -589,14 +753,9 @@ with tab_log:
     if not st.session_state.op_log:
         st.info("No operations yet. Run Single or Bulk to populate the log.")
     else:
-        # Show as DataFrame
         df_log = pd.DataFrame(st.session_state.op_log)
         st.dataframe(df_log, use_container_width=True)
-
-        # Export log
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine="openpyxl") as w:
             df_log.to_excel(w, index=False, sheet_name="Log")
         st.download_button("⬇️ Download Log (Excel)", data=out.getvalue(), file_name="samawy_blurb_log.xlsx")
-
-
