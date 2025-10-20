@@ -487,8 +487,8 @@ def categorize_book_cached(model: str, text_chunk: str, chunk_description: str) 
 # =========================
 # Sidebar (with live pricing)
 # =========================
-st.title("📖 Samawy Book Blurb Writer — Streamlit Edition")
-st.caption("AI-Powered Arabic blurbs & categorization (Gemini 2.x/2.5).")
+st.title("📖 Samawy Book Blurb Writer")
+st.caption("AI-Powered Arabic blurbs & categorization")
 
 with st.sidebar:
     st.header("🔑 AI Configuration")
@@ -811,6 +811,7 @@ with tab_log:
         with pd.ExcelWriter(out, engine="openpyxl") as w:
             df_log.to_excel(w, index=False, sheet_name="Log")
         st.download_button("⬇️ Download Log (Excel)", data=out.getvalue(), file_name="samawy_blurb_log.xlsx")
+
 
 
 
