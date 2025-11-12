@@ -1,0 +1,299 @@
+{
+  "name": "ClickUp Task Name Rollback from Google Sheets",
+  "flow": [
+    {
+      "id": 1,
+      "module": "google-sheets:getValues",
+      "version": 3,
+      "parameters": {
+        "__IMTCONN__": 1
+      },
+      "mapper": {
+        "select": "select",
+        "from": "drive",
+        "mode": "select",
+        "spreadsheetId": "{{1.spreadsheetId}}",
+        "sheetName": "{{1.sheetName}}",
+        "rangeStart": "A2",
+        "rangeEnd": "B",
+        "includeEmptyCells": false
+      },
+      "metadata": {
+        "designer": {
+          "x": 0,
+          "y": 0
+        },
+        "restore": {
+          "expect": {
+            "select": {
+              "label": "Select a Range"
+            },
+            "from": {
+              "label": "My Drive"
+            },
+            "mode": {
+              "label": "Choose a Spreadsheet"
+            }
+          },
+          "parameters": {
+            "__IMTCONN__": {
+              "data": {
+                "scoped": "true",
+                "connection": "google-sheets"
+              },
+              "label": "Google Sheets connection"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "__IMTCONN__",
+            "type": "account:google-sheets",
+            "label": "Connection",
+            "required": true
+          }
+        ],
+        "expect": [
+          {
+            "name": "select",
+            "type": "select",
+            "label": "Select Method",
+            "required": true,
+            "validate": {
+              "enum": [
+                "select",
+                "map"
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "type": "select",
+            "label": "Select From",
+            "required": true,
+            "validate": {
+              "enum": [
+                "drive",
+                "share"
+              ]
+            }
+          },
+          {
+            "name": "mode",
+            "type": "select",
+            "label": "Mode",
+            "required": true,
+            "validate": {
+              "enum": [
+                "select",
+                "map"
+              ]
+            }
+          },
+          {
+            "name": "spreadsheetId",
+            "type": "select",
+            "label": "Spreadsheet",
+            "required": true
+          },
+          {
+            "name": "sheetName",
+            "type": "select",
+            "label": "Sheet Name",
+            "required": true
+          },
+          {
+            "name": "rangeStart",
+            "type": "text",
+            "label": "Range Start (e.g., A2)",
+            "required": true
+          },
+          {
+            "name": "rangeEnd",
+            "type": "text",
+            "label": "Range End (e.g., B)",
+            "required": false
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "module": "builtin:BasicIterator",
+      "version": 1,
+      "parameters": {},
+      "mapper": {
+        "array": "{{1.values}}"
+      },
+      "metadata": {
+        "designer": {
+          "x": 300,
+          "y": 0
+        },
+        "restore": {
+          "expect": {
+            "array": {
+              "mode": "edit"
+            }
+          }
+        },
+        "expect": [
+          {
+            "name": "array",
+            "type": "array",
+            "label": "Array",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "module": "clickup:getTask",
+      "version": 1,
+      "parameters": {
+        "__IMTCONN__": 2
+      },
+      "mapper": {
+        "taskId": "{{2.array[0]}}",
+        "include_subtasks": false,
+        "custom_task_ids": false
+      },
+      "metadata": {
+        "designer": {
+          "x": 600,
+          "y": 0
+        },
+        "restore": {
+          "parameters": {
+            "__IMTCONN__": {
+              "data": {
+                "scoped": "true",
+                "connection": "clickup"
+              },
+              "label": "ClickUp connection"
+            }
+          },
+          "expect": {
+            "include_subtasks": {
+              "mode": "chose",
+              "label": "No"
+            },
+            "custom_task_ids": {
+              "mode": "chose",
+              "label": "No"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "__IMTCONN__",
+            "type": "account:clickup",
+            "label": "Connection",
+            "required": true
+          }
+        ],
+        "expect": [
+          {
+            "name": "taskId",
+            "type": "text",
+            "label": "Task ID",
+            "required": true
+          },
+          {
+            "name": "include_subtasks",
+            "type": "boolean",
+            "label": "Include Subtasks"
+          },
+          {
+            "name": "custom_task_ids",
+            "type": "boolean",
+            "label": "Use Custom Task IDs"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "module": "clickup:updateTask",
+      "version": 1,
+      "parameters": {
+        "__IMTCONN__": 2
+      },
+      "mapper": {
+        "taskId": "{{2.array[0]}}",
+        "name": "{{2.array[1]}}",
+        "custom_task_ids": false
+      },
+      "metadata": {
+        "designer": {
+          "x": 900,
+          "y": 0
+        },
+        "restore": {
+          "parameters": {
+            "__IMTCONN__": {
+              "data": {
+                "scoped": "true",
+                "connection": "clickup"
+              },
+              "label": "ClickUp connection"
+            }
+          },
+          "expect": {
+            "custom_task_ids": {
+              "mode": "chose",
+              "label": "No"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "__IMTCONN__",
+            "type": "account:clickup",
+            "label": "Connection",
+            "required": true
+          }
+        ],
+        "expect": [
+          {
+            "name": "taskId",
+            "type": "text",
+            "label": "Task ID",
+            "required": true
+          },
+          {
+            "name": "name",
+            "type": "text",
+            "label": "Task Name",
+            "required": false
+          },
+          {
+            "name": "custom_task_ids",
+            "type": "boolean",
+            "label": "Use Custom Task IDs"
+          }
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "instant": false,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": false,
+      "confidential": false,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": {
+      "orphans": []
+    },
+    "zone": "us1.make.com"
+  }
+}
